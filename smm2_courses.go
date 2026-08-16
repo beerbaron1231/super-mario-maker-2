@@ -159,21 +159,25 @@ func writeRelationObjectReqGetInfo(out *nex.StreamOut, url string, size uint32, 
 	var unkData []byte
 	if url != "" {
 		dataType = 1
-		// Only embed thumbnails for relType=2 (entire_thumbnail, 2-5KB raw JPEG).
-		// relType=1 (one_screen_thumbnail) is 114KB and makes the course list
-		// response too large (~470KB for 4 courses). Embedding relType=2 lets us
-		// test if the client can render a small JPEG without HTTP fetching.
-		if relType == 2 {
-			p := relationPath(dataID, relType)
-			if p != "" {
-				unkData, _ = os.ReadFile(p)
-				fmt.Printf("[SMM2 Courses] THUMB embed dataID=%d relType=%d: %d bytes\n", dataID, relType, len(unkData))
-			}
-		} else {
-			fmt.Printf("[SMM2 Courses] THUMB dataID=%d relType=%d: skipped (no embed, relType!=2)\n", dataID, relType)
+		// Embed thumbnail JPEG into unk for both relType=1 (one_screen) and relType=2
+		// (entire). The client renders one_screen_thumbnail in the course LIST view,
+		// but we only had relType=2 embedded before — one_screen had empty unk and
+		// showed a broken image. Embedding the same small JPEG (entire_thumbnail,
+		// 2-5KB) in both keeps the response manageable (~13KB for 4 courses) while
+		// ensuring the client has data in the field it actually reads for the list.
+		// relType=1 file (114KB) is too large per course; skip embedding it to avoid
+		// a ~470KB response that crashes the client.
+		p := relationPath(dataID, 2) // always use entire_thumbnail (small, 2-5KB)
+		if p != "" {
+			unkData, _ = os.ReadFile(p)
 		}
 	}
 	actualSize := uint32(len(unkData))
+	if url != "" && len(unkData) > 0 {
+		fmt.Printf("[SMM2 Courses] THUMB embed dataID=%d relType=%d->unk: %d bytes (file thumb2)\n", dataID, relType, actualSize)
+	} else if url != "" {
+		fmt.Printf("[SMM2 Courses] THUMB dataID=%d relType=%d: skipped (no file)\n", dataID, relType)
+	}
 	out.Add(&relationObjectReqGetInfoOut{
 		url: url, dataType: dataType, size: actualSize, unk: unkData,
 		filename: filenameFromURL(url),
@@ -309,10 +313,10 @@ func buildCourseInfo(s *nex.Settings, m *courseMeta) []byte {
 	thumb1URL := ""
 	thumb2URL := ""
 	if sz := relationSizeOnDisk(m.DataID, 1); sz > 0 {
-		thumb1URL = fmt.Sprintf("%s/relation/%d/%d", storageURL, m.DataID, uint32(1))
+		thumb1URL = fmt.Sprintf("%s/relation/%d/%d", storageBaseURL(), m.DataID, uint32(1))
 	}
 	if sz := relationSizeOnDisk(m.DataID, 2); sz > 0 {
-		thumb2URL = fmt.Sprintf("%s/relation/%d/%d", storageURL, m.DataID, uint32(2))
+		thumb2URL = fmt.Sprintf("%s/relation/%d/%d", storageBaseURL(), m.DataID, uint32(2))
 	}
 
 	out := nex.NewStreamOut(s)

@@ -21,6 +21,8 @@ package main
 // real upload (measured > guess).
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -33,15 +35,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aead/cmac"
 )
 
 var (
 	storagePort = envOrInt("STORAGE_PORT", 60078)
-	// storageURL is the PUBLIC base the console dials for blob transfer. Locally it is
-	// the game host itself; on the server set STORAGE_URL to the routed https origin.
-	// IMPORTANT: default to http:// (not https://) since the storage server doesn't run
-	// TLS — using https:// makes the client fail the connection and show broken thumbnails.
-	storageURL = envOr("STORAGE_URL", fmt.Sprintf("http://%s:%d", nextendoHost, storagePort))
+	// storageURL is computed dynamically at call time from storageScheme(), so it always
+	// reflects whether TLS is actually active. Prefer setting NEXTENDO_HOST / STORAGE_PORT
+	// env vars over STORAGE_URL directly — that way the scheme is always correct.
 	// storageHostPort is the scheme-less host:port the console POSTs uploads to (the
 	// measured S3 responses carry a scheme-less host and the console prepends https://).
 	storageHostPort = envOr("STORAGE_HOSTPORT", fmt.Sprintf("%s:%d", nextendoHost, storagePort))
@@ -129,7 +131,7 @@ func (c *courseStore) load() {
 		}
 	}
 	fmt.Printf("[SMM2 Storage] catalogue chargé: %d cours, nextID=%d, dir=%s, url=%s\n",
-		len(c.byID), c.nextID, storageDir, storageURL)
+		len(c.byID), c.nextID, storageDir, storageBaseURL())
 	c.migrateFlatLayout()
 }
 
@@ -572,7 +574,23 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// startStorageServer serves blob PUT/POST/GET over HTTPS on storagePort.
+// storageScheme returns "https" if cert+key files exist (TLS enabled), else "http".
+func storageScheme() string {
+	_, cErr := os.Stat(certFile)
+	_, kErr := os.Stat(keyFile)
+	if cErr == nil && kErr == nil {
+		return "https"
+	}
+	return "http"
+}
+
+// storageBaseURL returns the full storage base URL (e.g. "https://192.168.1.147:60078").
+// Recomputed every call so it always matches the actual TLS state at runtime.
+func storageBaseURL() string {
+	return fmt.Sprintf("%s://%s:%d", storageScheme(), nextendoHost, storagePort)
+}
+
+// startStorageServer serves blob PUT/POST/GET on storagePort (HTTP or HTTPS).
 func startStorageServer() {
 	courses.load()
 	mux := http.NewServeMux()
@@ -602,9 +620,16 @@ func startStorageServer() {
 	// POST sequence) which is a separate problem we already fixed via the form
 	// 'key' field — that comment is stale.
 	srv.SetKeepAlivesEnabled(false)
-	fmt.Printf("[SMM2 Storage] listening HTTPS :%d (blob store)\n", storagePort)
-	if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil {
-		fmt.Printf("[SMM2 Storage] stopped: %v\n", err)
+	if storageScheme() == "https" {
+		fmt.Printf("[SMM2 Storage] listening HTTPS :%d (blob store)\n", storagePort)
+		if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil {
+			fmt.Printf("[SMM2 Storage] stopped: %v\n", err)
+		}
+	} else {
+		fmt.Printf("[SMM2 Storage] listening HTTP :%d (blob store)\n", storagePort)
+		if err := srv.ListenAndServe(); err != nil {
+			fmt.Printf("[SMM2 Storage] stopped: %v\n", err)
+		}
 	}
 }
 
@@ -651,6 +676,29 @@ func objectHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+		// COMENTADO (16/8): dos intentos de servir el nivel descifrado (SCDG) probados
+		// en consola real, ninguno mejoró nada. Intento #1: swap del magic del header
+		// (bug propio, daba "GCDL" en vez de "SCDG") -> rompió el flujo, el cliente dejó
+		// de llamar al método 61 por completo. Intento #2 (corregido, header intacto tal
+		// cual "SCDL", solo el cuerpo descifrado, siguiendo documentación externa de
+		// nintendo-formats.com): tampoco funcionó. El algoritmo de descifrado en sí está
+		// verificado y es correcto (CMAC coincide con la librería real
+		// github.com/aead/cmac) — el problema no es el algoritmo, es la premisa: el
+		// server no debe descifrar nada. Confirmado también por fuente externa (Reddit
+		// SMMDB): SCDL es la forma de red, SCDG es el estado al que la CONSOLA llega
+		// sola. Revertido definitivamente a servir el blob crudo (SCDL) sin tocar —
+		// ya probado con evidencia criptográfica real que es la forma correcta. Dejado
+		// comentado el código de descifrado (no borrado) por si aparece nueva evidencia.
+		//
+		// if len(b) >= 16 && string(b[12:16]) == "SCDL" {
+		// 	decrypted, derr := decryptSCDL(b)
+		// 	if derr != nil {
+		// 		fmt.Printf("[SMM2 Storage] GET %d SCDL decrypt FAIL: %v — sirviendo SCDL crudo en su lugar\n", dataID, derr)
+		// 	} else {
+		// 		b = decrypted
+		// 		fmt.Printf("[SMM2 Storage] GET %d SCDL -> descifrado, header SCDL intacto (%d bytes)\n", dataID, len(b))
+		// 	}
+		// }
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 		sum := md5.Sum(b)
@@ -845,3 +893,92 @@ func readAllLimited(r *http.Request, max int64) ([]byte, error) {
 // nowUnix returns the current unix time (isolated so the rest of the file has no
 // direct time import churn).
 func nowUnix() int64 { return time.Now().Unix() }
+
+// decryptSCDL decrypts an SCDL (encrypted) course blob and returns the decrypted
+// SCDG data. File layout:
+//   [0..12)        unknown header (12 bytes) — version byte + size/flags
+//   [12..16)       "SCDL" magic
+//   [16..size-48)  encrypted body (AES-CBC)
+//   [size-48..size-32)  IV (16 bytes)
+//   [size-32..size-16) RNG state (16 bytes) — 4x uint32 LE, seeds ENL RNG
+//   [size-16..size)     CMAC (16 bytes) — integrity tag over encrypted body
+//
+// After decryption the level data starts with "SCDG".
+func decryptSCDL(blob []byte) ([]byte, error) {
+	const footerSize = 48
+	const magicOffset = 12
+	const encryptedBodyOffset = 16
+	if len(blob) < encryptedBodyOffset+footerSize+32 {
+		return nil, fmt.Errorf("blob too short: %d bytes", len(blob))
+	}
+	if string(blob[magicOffset:magicOffset+4]) != "SCDL" {
+		return nil, fmt.Errorf("not SCDL magic at offset %d: %x", magicOffset, blob[magicOffset:magicOffset+4])
+	}
+
+	// --- Parse footer ---
+	iv := blob[len(blob)-footerSize : len(blob)-footerSize+16]
+	rngState := blob[len(blob)-footerSize+16 : len(blob)-16]
+	storedCMAC := blob[len(blob)-16:]
+
+	// --- Derive AES key AND CMAC key, SEQUENTIALLY from the same RNG instance ---
+	// Critical fix vs the previous version: the real algorithm derives TWO separate
+	// keys by calling createKey twice on the SAME rng (its state carries over between
+	// calls) — not one key reused for both AES and CMAC. Verified 16/8 against the
+	// real mm2srv/smm2_parsing library.
+	rng := newSeadRNGFromBytes(rngState)
+	aesKey := createKey(&rng, bcdTable[:], 16)
+	cmacKey := createKey(&rng, bcdTable[:], 16)
+	fmt.Printf("[SMM2 Storage] ENL: aesKey=%x cmacKey=%x\n", aesKey, cmacKey)
+
+	// --- Decrypt body ---
+	ciphertext := blob[encryptedBodyOffset : len(blob)-footerSize]
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("AES cipher: %w", err)
+	}
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("ciphertext not block-aligned: %d", len(ciphertext))
+	}
+	plaintext := make([]byte, len(ciphertext))
+	cbc := cipher.NewCBCDecrypter(block, iv)
+	cbc.CryptBlocks(plaintext, ciphertext)
+
+	// --- Verify CMAC (usando la librería real github.com/aead/cmac, no una
+	// reimplementación manual — verificado 16/8 que produce el CMAC correcto contra
+	// un level.bin real de este proyecto, cosa que la implementación manual anterior
+	// nunca lograba). Corte estricto: si no coincide, NO servimos basura a la consola.
+	cmacBlock, err := aes.NewCipher(cmacKey)
+	if err != nil {
+		return nil, fmt.Errorf("CMAC cipher: %w", err)
+	}
+	computedCMAC, err := cmac.Sum(plaintext, cmacBlock, 16)
+	if err != nil {
+		return nil, fmt.Errorf("CMAC compute: %w", err)
+	}
+	if !hmacEqual(computedCMAC, storedCMAC) {
+		return nil, fmt.Errorf("CMAC invalid (computed=%x stored=%x)", computedCMAC[:8], storedCMAC[:8])
+	}
+	fmt.Printf("[SMM2 Storage] ENL: CMAC OK\n")
+
+	// --- Build output: header (bytes 0x0-0xF, magic "SCDL" INCLUIDO) queda SIN
+	// TOCAR — corregido: la versión anterior cambiaba por error el primer byte del
+	// magic (bug: debería haber dicho "swap first char" no "last char", y ni siquiera
+	// eso era lo correcto). Según documentación externa, el header es un marcador de
+	// formato de CONTENEDOR fijo, no cambia con el estado de cifrado del cuerpo.
+	out := make([]byte, encryptedBodyOffset+len(plaintext))
+	copy(out[:], blob[:encryptedBodyOffset]) // header intacto, incluye "SCDL" sin tocar
+	copy(out[encryptedBodyOffset:], plaintext)
+	return out, nil
+}
+
+// hmacEqual is a constant-time comparison to avoid timing attacks on CMAC verification.
+func hmacEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := 0; i < len(a); i++ {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
+}

@@ -67,7 +67,7 @@ func smm2PreparePostObjectCourse(conn *nex.Connection, req *nex.RMCMessage) *nex
 	if name != "" {
 		courses.updateMeta(id, name, description, tags, gameStyle, courseTheme, difficulty)
 	}
-	url := fmt.Sprintf("%s/object/%d", storageURL, id)
+	url := fmt.Sprintf("%s/object/%d", storageBaseURL(), id)
 
 	body := nex.NewStreamOut(s)
 	body.U64(id)
@@ -206,7 +206,7 @@ func smm2PrepareRelationUpload(conn *nex.Connection, req *nex.RMCMessage) *nex.R
 		return nex.NewRMCError(s, 0x73, req.CallID, 0x80690004) // DataStore::NotFound
 	}
 	key := relationKey(dataID, relType) // "<dataID>/<relType>"
-	url := fmt.Sprintf("%s/relation/%s", storageURL, key)
+	url := fmt.Sprintf("%s/relation/%s", storageBaseURL(), key)
 
 	body := nex.NewStreamOut(s)
 	body.String(requestedDataID) // data_id: ECHO the course's own data_id, not a generated key
@@ -252,7 +252,7 @@ func smm2PreparePostObject(conn *nex.Connection, req *nex.RMCMessage) *nex.RMCMe
 	// permission / tags / rating / persistence follow but aren't needed to store a blob.
 
 	id := courses.alloc(conn.PID, name, dataType, metaBin, nil, size)
-	url := fmt.Sprintf("%s/object/%d", storageURL, id)
+	url := fmt.Sprintf("%s/object/%d", storageBaseURL(), id)
 
 	body := nex.NewStreamOut(s)
 	body.U64(id)                 // data_id
@@ -318,7 +318,7 @@ func smm2PrepareGetObject(conn *nex.Connection, req *nex.RMCMessage) *nex.RMCMes
 			m.Size = diskSize
 		}
 
-		url := fmt.Sprintf("%s/object/%d", storageURL, dataID)
+		url := fmt.Sprintf("%s/object/%d", storageBaseURL(), dataID)
 		body := nex.NewStreamOut(s)
 		body.String(url)             // url
 		writeKeyValueList(body, nil) // headers: none

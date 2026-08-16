@@ -1,5 +1,5 @@
-github.com/NextendoNetwork/nextendo-nex v0.1.4 h1:mC0T88CyTiV3qjrrfMCMGIIvDwDuVT53/wwCcqoi/+4=
-github.com/NextendoNetwork/nextendo-nex v0.1.4/go.mod h1:HW1+OvhwLp+lhNtt8ohJOq3156UlJLlJSPcfrhlprj8=
+github.com/aead/cmac v0.0.0-20160719120800-7af84192f0b1 h1:+JkXLHME8vLJafGhOH4aoV2Iu8bR55nU6iKMVfYVLjY=
+github.com/aead/cmac v0.0.0-20160719120800-7af84192f0b1/go.mod h1:nuudZmJhzWtx2212z+pkuy7B6nkBqa+xwNXZHL1j8cg=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=

@@ -5,6 +5,7 @@ go 1.23.0
 require github.com/NextendoNetwork/nextendo-nex v0.1.4
 
 require (
+	github.com/aead/cmac v0.0.0-20160719120800-7af84192f0b1
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/lxzan/gws v1.10.0 // indirect
 )
