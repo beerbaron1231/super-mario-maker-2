@@ -1,0 +1,101 @@
+[
+  {
+    "pid": 1800000001,
+    "username": "Beer2",
+    "mii_data_hex": "dc0c91418dbd47b0b9e0e653ef92fb8a4200650065007200320000000000000000000000000000000040400000000000002101000208040304020c0601040306020a010409171304030d080000040a0008040a0004021400",
+    "unk1_hex": "0000000000000000",
+    "region_id": 1,
+    "country_code": "CL",
+    "pseudo_device_id": "78563412-dea1-71a5-016d-7342f0debc9a",
+    "registered_at": 1786833967,
+    "play_stats": {
+      "plays": 10,
+      "clears": 9,
+      "attempts": 660,
+      "deaths": 1
+    },
+    "maker_stats": {
+      "uploaded": 4,
+      "plays_received": 11,
+      "clears_received": 12,
+      "attempts_received": 13,
+      "deaths_received": 14,
+      "likes_received": 15,
+      "hearts_received": 16,
+      "boos_received": 17,
+      "maker_points": 18
+    },
+    "multiplayer_stats": {
+      "score": 0,
+      "versus_plays": 0,
+      "versus_wins": 0,
+      "coop_plays": 0,
+      "coop_wins": 0
+    },
+    "endless_high_scores": null,
+    "badges": null,
+    "unk7": null,
+    "unk8": null,
+    "unk9": null,
+    "unk10": false,
+    "unk11": 0,
+    "unk12": false,
+    "unk14": "",
+    "unk15": null,
+    "unk16": false,
+    "uploaded_count": 4,
+    "uploaded_ids": [
+      1000,
+      1001,
+      1002,
+      1003
+    ]
+  },
+  {
+    "pid": 1801113194,
+    "username": "Beer2",
+    "mii_data_hex": "dc0c91418dbd47b0b9e0e653ef92fb8a4200650065007200320000000000000000000000000000000040400000000000002101000208040304020c0601040306020a010409171304030d080000040a0008040a0004021400",
+    "unk1_hex": "0000000000000000",
+    "region_id": 1,
+    "country_code": "CL",
+    "pseudo_device_id": "78563412-dea1-71a5-016d-7342f0debc9a",
+    "registered_at": 1786775183,
+    "play_stats": {
+      "plays": 0,
+      "clears": 0,
+      "attempts": 0,
+      "deaths": 0
+    },
+    "maker_stats": {
+      "uploaded": 14,
+      "plays_received": 0,
+      "clears_received": 0,
+      "attempts_received": 0,
+      "deaths_received": 0,
+      "likes_received": 0,
+      "hearts_received": 0,
+      "boos_received": 0,
+      "maker_points": 0
+    },
+    "multiplayer_stats": {
+      "score": 0,
+      "versus_plays": 0,
+      "versus_wins": 0,
+      "coop_plays": 0,
+      "coop_wins": 0
+    },
+    "endless_high_scores": null,
+    "badges": null,
+    "unk7": null,
+    "unk8": null,
+    "unk9": null,
+    "unk10": false,
+    "unk11": 0,
+    "unk12": false,
+    "unk14": "",
+    "unk15": null,
+    "unk16": false,
+    "uploaded_count": 14,
+    "uploaded_ids": []
+  }
+]

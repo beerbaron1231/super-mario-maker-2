@@ -39,7 +39,9 @@ var (
 	storagePort = envOrInt("STORAGE_PORT", 60078)
 	// storageURL is the PUBLIC base the console dials for blob transfer. Locally it is
 	// the game host itself; on the server set STORAGE_URL to the routed https origin.
-	storageURL = envOr("STORAGE_URL", fmt.Sprintf("https://%s:%d", nextendoHost, storagePort))
+	// IMPORTANT: default to http:// (not https://) since the storage server doesn't run
+	// TLS — using https:// makes the client fail the connection and show broken thumbnails.
+	storageURL = envOr("STORAGE_URL", fmt.Sprintf("http://%s:%d", nextendoHost, storagePort))
 	// storageHostPort is the scheme-less host:port the console POSTs uploads to (the
 	// measured S3 responses carry a scheme-less host and the console prepends https://).
 	storageHostPort = envOr("STORAGE_HOSTPORT", fmt.Sprintf("%s:%d", nextendoHost, storagePort))
@@ -637,7 +639,10 @@ func objectHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		courses.setSize(dataID, uint32(len(body)))
-		fmt.Printf("[SMM2 Storage] %s /object/%d <- %d bytes (ct=%q)\n", r.Method, dataID, len(body), r.Header.Get("Content-Type"))
+		// Checksum logging (fresh angle: is our own storage pipeline corrupting the
+		// blob on the way in/out, independent of any protocol/format question?).
+		sum := md5.Sum(body)
+		fmt.Printf("[SMM2 Storage] %s /object/%d <- %d bytes (ct=%q) md5=%x\n", r.Method, dataID, len(body), r.Header.Get("Content-Type"), sum)
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet, http.MethodHead:
 		b, err := os.ReadFile(blobPath(dataID))
@@ -648,7 +653,8 @@ func objectHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(b)))
-		fmt.Printf("[SMM2 Storage] GET /object/%d -> %d bytes\n", dataID, len(b))
+		sum := md5.Sum(b)
+		fmt.Printf("[SMM2 Storage] GET /object/%d -> %d bytes md5=%x\n", dataID, len(b), sum)
 		if r.Method == http.MethodGet {
 			w.Write(b)
 		}

@@ -98,6 +98,8 @@ var smm2EmptyBuilders = map[uint32]func(*nex.StreamOut){
 func smm2DataStoreHandler() nex.RMCHandler {
 	return func(conn *nex.Connection, req *nex.RMCMessage) *nex.RMCMessage {
 		s := conn.Settings
+		fmt.Printf("[SMM2 DataStore] INCOMING method=%d call=%d pid=%d body_len=%d\n",
+			req.Method, req.CallID, conn.PID, len(req.Body))
 
 		// --- Dynamic profile: rewrite the measured identity to the connected account.
 		// get_users(48): one profile per requested pid (never the 261 measured users).
@@ -170,22 +172,18 @@ func smm2DataStoreHandler() nex.RMCHandler {
 			return nex.NewRMCSuccess(s, 0x73, req.Method, req.CallID, nil)
 		}
 
-		// (61) — NOT in the official datastore_smm2 method list at all. Content-guessing on
-		// this one has been exhausted: THREE different response shapes tried (empty ack,
-		// U32(0), Bool(true)) and ALL THREE fail identically — same "communication error"
-		// popup after starting to play any course (own or someone else's), confirmed via
-		// real captures each time with the actual bytes on the wire. Since varying the
-		// RESPONSE content made zero difference across three genuinely different shapes,
-		// the response content is very likely NOT the actual blocker — something else in
-		// the client's own state, timing, or a step we haven't identified is failing
-		// independent of what we answer here. Leaving this as a plain empty ack (the
-		// simplest of the three, no better or worse than the others) and treating this as
-		// a known, unresolved limitation until a real capture or client-side reference
-		// turns up — same wall as the thumbnails issue. Do not keep guessing content here
-		// without new evidence.
+		// (61) — undocumented SMM2 method, called right after downloading a course over
+		// HTTP (method 25). Request: {data_id: u64, flag: u32=3} — 12 bytes total.
+		// NO leading version byte (unlike methods 24/25/66 which all have one).
+		// Communication error with: frameStruct(U64), raw U64, U64+Bool, Bool alone.
+		// nil = spinner hangs. Now trying: EMPTY frameStruct [version=0][len=0] = 5 bytes.
+		// Not nil (0 bytes) and not raw bytes — a NEX structure with zero fields.
 		if req.Method == 61 {
-			fmt.Printf("[SMM2 DataStore] method 61 pid=%d -> ack vacío (3 formas de respuesta probadas, ninguna cambió el resultado — límite conocido)\n", conn.PID)
-			return nex.NewRMCSuccess(s, 0x73, req.Method, req.CallID, nil)
+			in := nex.NewStreamIn(req.Body, s)
+			dataID := in.U64()
+			flag := in.U32()
+			fmt.Printf("[SMM2 DataStore] method 61 pid=%d data_id=%d flag=%d\n", conn.PID, dataID, flag)
+			return nex.NewRMCSuccess(s, 0x73, req.Method, req.CallID, frameStruct(s, 0, nil))
 		}
 
 		// --- Level storage: real object upload/download on the Nextendo VPS.

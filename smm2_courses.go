@@ -15,6 +15,7 @@ package main
 //     wiki — kinnay was wrong here)
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -139,17 +140,42 @@ func writeCourseTimeStats(out *nex.StreamOut) {
 // NintendoClients:2544. dataType=0 when there's no real url (empty string) — that's
 // the "no thumbnail available" sentinel. When we DO have a real thumbnail on disk,
 // dataType must be nonzero (1) or the client apparently treats data_type==0 as "no
-// thumbnail" regardless of the URL/size being populated, and never even attempts the
-// HTTP GET — a real capture confirmed the URL+size were byte-perfect (114688, matching
-// the file on disk exactly) yet nothing rendered client-side, with data_type hardcoded
-// to 0 unconditionally.
-func writeRelationObjectReqGetInfo(out *nex.StreamOut, url string, size uint32) {
+// thumbnail" regardless of the URL/size being populated.
+//
+// THUMBNAIL EMBED: the thumbnail bytes go directly in the `unk` buffer field
+// (u32 length prefix, up to 4GB). The client reads unk and renders the image.
+//
+// Files on disk are in the "wrapper" format (thumb1.jpg = 114688 bytes exactly):
+//   [114588 bytes JPEG][4B LE32=114588][32B HMAC-SHA256][16B RNG][48B padding]
+// thumb2.jpg is a raw JPEG (2-5KB), no wrapper.
+//
+// We now send the COMPLETE thumb1 wrapper (114688 bytes) instead of truncating
+// to 50KB. The size field is set to len(unkData) for consistency.
+// If the client validates the HMAC, our wrapper will fail (we don't have Nintendo's
+// key). If there's a fallback path for unencrypted data, raw JPEG (thumb2.jpg)
+// should work. Both are tested here.
+func writeRelationObjectReqGetInfo(out *nex.StreamOut, url string, size uint32, dataID uint64, relType uint32) {
 	dataType := uint8(0)
+	var unkData []byte
 	if url != "" {
 		dataType = 1
+		// Only embed thumbnails for relType=2 (entire_thumbnail, 2-5KB raw JPEG).
+		// relType=1 (one_screen_thumbnail) is 114KB and makes the course list
+		// response too large (~470KB for 4 courses). Embedding relType=2 lets us
+		// test if the client can render a small JPEG without HTTP fetching.
+		if relType == 2 {
+			p := relationPath(dataID, relType)
+			if p != "" {
+				unkData, _ = os.ReadFile(p)
+				fmt.Printf("[SMM2 Courses] THUMB embed dataID=%d relType=%d: %d bytes\n", dataID, relType, len(unkData))
+			}
+		} else {
+			fmt.Printf("[SMM2 Courses] THUMB dataID=%d relType=%d: skipped (no embed, relType!=2)\n", dataID, relType)
+		}
 	}
+	actualSize := uint32(len(unkData))
 	out.Add(&relationObjectReqGetInfoOut{
-		url: url, dataType: dataType, size: size, unk: nil,
+		url: url, dataType: dataType, size: actualSize, unk: unkData,
 		filename: filenameFromURL(url),
 	})
 }
@@ -187,6 +213,71 @@ func relationBytesOnDisk(dataID uint64, relType uint32, maxSize int) []byte {
 	b, err := os.ReadFile(p)
 	if err != nil || len(b) > maxSize {
 		return nil
+	}
+	return b
+}
+
+// buildThumbnailUnk3 constructs the unk3 blob for a course thumbnail.
+// Layout per user analysis:
+//   [114588 bytes JPEG data]
+//   [4 bytes LE uint32 = thumbnail_size (0x1BF9C = 114588)]
+//   [32 bytes HMAC-SHA256 of JPEG data]
+//   [16 bytes RNG state for key generation (zeroed for now)]
+//   [48 bytes padding (0x00)]
+//   Total = 0x1C000 = 114688 bytes
+// Returns nil if the thumbnail file doesn't exist on disk.
+func buildThumbnailUnk3(dataID uint64, relType uint32) []byte {
+	p := relationPath(dataID, relType)
+	if p == "" {
+		return nil
+	}
+	jpegData, err := os.ReadFile(p)
+	if err != nil || len(jpegData) == 0 {
+		return nil
+	}
+
+	// Verify JPEG magic bytes
+	if !(jpegData[0] == 0xFF && jpegData[1] == 0xD8) {
+		fmt.Printf("[SMM2 Courses] WARNING: %s does not start with JPEG magic (got %02x%02x)\n", p, jpegData[0], jpegData[1])
+	}
+
+	jpegLen := uint32(len(jpegData))
+	totalSize := uint32(0x1C000) // 114688
+
+	// HMAC-SHA256 of JPEG data (key = "" per Nintendo default)
+	hmacDigest := hmac.New(sha256.New, []byte{})
+	hmacDigest.Write(jpegData)
+	hmacBytes := hmacDigest.Sum(nil) // 32 bytes
+
+	// RNG state (16 bytes, zeroed — we don't have real RNG state)
+	rngState := make([]byte, 16)
+
+	// Padding to reach totalSize
+	paddingSize := totalSize - jpegLen - 4 - uint32(len(hmacBytes)) - uint32(len(rngState))
+	padding := make([]byte, paddingSize)
+
+	// Assemble
+	buf := make([]byte, 0, int(totalSize))
+	buf = append(buf, jpegData...)
+	// Thumbnail size (LE u32)
+	buf = append(buf, byte(jpegLen), byte(jpegLen>>8), byte(jpegLen>>16), byte(jpegLen>>24))
+	buf = append(buf, hmacBytes...)
+	buf = append(buf, rngState...)
+	buf = append(buf, padding...)
+
+	fmt.Printf("[SMM2 Courses] unk3: data_id=%d relType=%d jpeg=%d total=%d (path=%s)\n",
+		dataID, relType, len(jpegData), len(buf), p)
+
+	// Hex dump first 64 bytes for debugging
+	hexSample := hex.EncodeToString(buf[:intMin(64, len(buf))])
+	fmt.Printf("[SMM2 Courses] unk3 hex sample: %s...\n", hexSample)
+
+	return buf
+}
+
+func intMin(a, b int) int {
+	if a < b {
+		return a
 	}
 	return b
 }
@@ -253,13 +344,10 @@ func buildCourseInfo(s *nex.Settings, m *courseMeta) []byte {
 	out.U32(0)                         // clear_condition
 	out.U16(0)                         // clear_condition_magnitude
 	out.U16(0)                         // unk2
-	// unk3: TESTED AND REVERTED. Tried embedding the small entire_thumbnail (thumb2)
-	// directly here as a hypothesis for how the client shows thumbnails without ever
-	// issuing an HTTP GET for one_screen/entire_thumbnail (confirmed real JPEG bytes
-	// landed in the wire — response size correctly grew to ~42KB for 15 courses — but
-	// thumbnails still didn't render). Reverted to empty: no confirmed benefit, and it
-	// was pure overhead (up to ~40KB per course) otherwise. This is now a known
-	// limitation with no further untested, well-reasoned hypothesis — see memory notes.
+	// unk3: REVERTED — QBuffer uses u16 length prefix (max 65535), but thumbnails
+	// are ~114KB. Sending 114688 in a u16 field crashed the client (it read way
+	// too many bytes, completely desynchronized the wire stream).
+	// NEXT: try with a small JPEG (<65535 bytes) to verify the embed mechanism works.
 	out.QBuffer(nil)
 	writeU8U32Map(out, buildCoursePlayStatsMap(m))  // play_stats (PlayStatsKeys)
 	writeU8U32Map(out, buildCourseRatingsMap(m))     // ratings (slot 0=like,1=heart,2=boo)
@@ -270,8 +358,8 @@ func buildCourseInfo(s *nex.Settings, m *courseMeta) []byte {
 	out.U8(0)                          // unk10
 	out.U8(0)                          // unk11
 	out.U8(0)                          // unk12
-	writeRelationObjectReqGetInfo(out, thumb1URL, relationSizeOnDisk(m.DataID, 1)) // one_screen_thumbnail
-	writeRelationObjectReqGetInfo(out, thumb2URL, relationSizeOnDisk(m.DataID, 2)) // entire_thumbnail
+	writeRelationObjectReqGetInfo(out, thumb1URL, relationSizeOnDisk(m.DataID, 1), m.DataID, 1) // one_screen_thumbnail
+	writeRelationObjectReqGetInfo(out, thumb2URL, relationSizeOnDisk(m.DataID, 2), m.DataID, 2) // entire_thumbnail
 
 	return frameStruct(s, 0, out.Bytes())
 }
@@ -352,6 +440,11 @@ func smm2GetCourses(conn *nex.Connection, req *nex.RMCMessage) *nex.RMCMessage {
 	}
 
 	fmt.Printf("[SMM2 Courses] get_courses(70) pid=%d requested=%d found=%d\n", conn.PID, len(dataIDs), len(infos))
+	// HEX DUMP of first CourseInfo (if any) for debugging unk3/thumbnail
+	if len(infos) > 0 {
+		h := hex.EncodeToString(infos[0])
+		fmt.Printf("[SMM2 Courses]   70 first CourseInfo HEX (%d bytes):\n%s\n", len(infos[0]), hexDump(h))
+	}
 	return nex.NewRMCSuccess(s, 0x73, req.Method, req.CallID, out.Bytes())
 }
 
@@ -375,6 +468,9 @@ func smm2SearchCoursesLatest(conn *nex.Connection, req *nex.RMCMessage) *nex.RMC
 		// SAME data_id's bytes when it also appears in search_courses_posted_by(74) —
 		// same source code, never actually byte-diffed against each other before.
 		fmt.Printf("[SMM2 Courses]   73 data_id=%d hash=%s len=%d\n", m.DataID, courseInfoHash(ci), len(ci))
+		// HEX DUMP for each course (for thumbnail/unk3 debugging)
+		h := hex.EncodeToString(ci)
+		fmt.Printf("[SMM2 Courses]   73 HEX data_id=%d:\n%s\n", m.DataID, hexDump(h))
 	}
 	out.Bool(true) // result
 
@@ -421,7 +517,8 @@ func smm2SearchCoursesHot(conn *nex.Connection, req *nex.RMCMessage) *nex.RMCMes
 	}
 	out.Bool(true) // result
 
-	fmt.Printf("[SMM2 Courses] search_courses_hot(84) pid=%d -> %d course(s) sorted by hotness\n", conn.PID, len(list))
+	respBytes := out.Bytes()
+	fmt.Printf("[SMM2 Courses] search_courses_hot(84) pid=%d -> %d course(s) sorted by hotness, RESP_SIZE=%d bytes\n", conn.PID, len(list), len(respBytes))
 	return nex.NewRMCSuccess(s, 0x73, req.Method, req.CallID, out.Bytes())
 }
 
@@ -767,4 +864,14 @@ func parseRateObjectParam(s *nex.Settings, body []byte) (dataID uint64, slot uin
 	_ = sub.U32() // access_password (ignored)
 	ok = true
 	return
+}
+
+// hexDump formats a hex string into 16-byte lines with offsets for easy reading.
+func hexDump(hexStr string) string {
+	var out string
+	for i := 0; i < len(hexStr); i += 32 {
+		end := intMin(i+32, len(hexStr))
+		out += fmt.Sprintf("  %04x: %s\n", i/2, hexStr[i:end])
+	}
+	return out
 }

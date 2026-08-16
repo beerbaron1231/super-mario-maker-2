@@ -90,10 +90,21 @@ const (
 	nsaNegCacheMax = 4096
 )
 
+// manualNSAOverrides: excepciones cargadas a mano para pruebas con hardware real, sin
+// necesitar levantar el servicio nextendo-account. Revisado ANTES de la llamada de red en
+// resolveNSAtoPID — si el NSA está acá, se resuelve al instante al PID indicado, sin tocar
+// la cache ni el servicio externo. Agregar/quitar entradas a mano según haga falta.
+var manualNSAOverrides = map[uint64]uint64{
+	6674605588908058268: 1800000001, // Switch real de prueba (16/8) -> cuenta Beer
+}
+
 // resolveNSAtoPID mappe un NSA id (baasUserID d'une vraie Switch) vers le PID du compte
 // Nextendo : (pid, nsaOK) si lié, (0, nsaUnknown) si aucun compte ne le possède,
 // (0, nsaUnreachable) si injoignable. Les résultats positifs sont cachés.
 func resolveNSAtoPID(nsa uint64) (uint64, nsaStatus) {
+	if pid, ok := manualNSAOverrides[nsa]; ok {
+		return pid, nsaOK
+	}
 	nsaCacheMu.Lock()
 	if pid, ok := nsaCache[nsa]; ok {
 		nsaCacheMu.Unlock()
